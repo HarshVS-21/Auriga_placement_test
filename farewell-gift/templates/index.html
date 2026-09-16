@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Farewell Gift Splitter</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+
+<div class="container">
+
+    <div class="hero">
+    <div>
+        <p class="eyebrow">TEAM CONTRIBUTION MANAGER</p>
+        <h1>Farewell Gift Splitter</h1>
+        <p class="subtitle">
+            Track contributions, see everyone's share, and settle up effortlessly.
+        </p>
+    </div>
+    </div>
+
+    <section class="card">
+        <h2>Pool Setup</h2>
+
+        <div class="form-row">
+            <input id="organizer" placeholder="Organizer name">
+            <input id="budget" type="number" min="1" placeholder="Budget ₹">
+            <button onclick="createPool()">Create / Update Pool</button>
+        </div>
+    </section>
+
+    <section class="card">
+        <h2>Add Participant</h2>
+
+        <div class="form-row">
+            <input id="participantName" placeholder="Participant name">
+            <button onclick="addParticipant()">Add</button>
+        </div>
+    </section>
+
+    <section id="summarySection" class="hidden">
+
+        <div class="stats">
+
+            <div class="stat">
+                <span>Budget</span>
+                <strong id="budgetValue">₹0</strong>
+            </div>
+
+            <div class="stat">
+                <span>Share / Person</span>
+                <strong id="shareValue">₹0</strong>
+            </div>
+
+            <div class="stat">
+                <span>Collected</span>
+                <strong id="collectedValue">₹0</strong>
+            </div>
+
+            <div class="stat">
+                <span>Remaining</span>
+                <strong id="remainingValue">₹0</strong>
+            </div>
+
+        </div>
+
+        <section class="card">
+            <h2>Participants</h2>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Share</th>
+                        <th>Paid</th>
+                        <th>Balance</th>
+                        <th>Payment</th>
+                    </tr>
+                </thead>
+
+                <tbody id="participantsTable"></tbody>
+            </table>
+        </section>
+
+        <section class="card">
+            <h2>Settlement</h2>
+
+            <div id="settlements"></div>
+        </section>
+
+        <button class="danger" onclick="resetPool()">Reset Pool</button>
+
+    </section>
+
+</div>
+
+<script src="/static/app.js"></script>
+
+</body>
+</html>
