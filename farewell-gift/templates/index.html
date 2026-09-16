@@ -32,6 +32,29 @@
     </section>
 
     <section class="card">
+        <h2>Import Past Contributions</h2>
+
+        <p class="import-help">
+            Upload a CSV containing participant names and contribution amounts.
+            The system will clean duplicates, merge name variations, and reject invalid rows.
+        </p>
+
+        <div class="form-row">
+            <input
+                id="csvFile"
+                type="file"
+                accept=".csv"
+            >
+
+            <button onclick="importCsv()">
+                Import Contributions
+            </button>
+        </div>
+
+        <div id="importReport" class="import-report hidden"></div>
+    </section>
+
+    <section class="card">
         <h2>Add Participant</h2>
 
         <div class="form-row">

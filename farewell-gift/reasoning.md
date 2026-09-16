@@ -279,3 +279,180 @@ The implementation follows this priority:
 Correctness > Completeness > Simplicity > Optimization
 
 The final solution focuses on correctly solving the organiser's actual problem while keeping the system easy to understand, run, test, and maintain.
+
+## 16. Handling the Messy Contribution Import
+
+The problem was extended to include a messy list of historical contributions. The imported data may contain duplicate entries, inconsistent name spellings, inconsistent amount formats, and invalid rows.
+
+The import process was designed as a separate data-cleaning step before updating participant balances.
+
+The flow is:
+
+CSV File  
+↓  
+Validate CSV structure  
+↓  
+Clean names and amounts  
+↓  
+Reject invalid rows  
+↓  
+Detect duplicate contribution rows  
+↓  
+Match existing participant names  
+↓  
+Merge valid contributions  
+↓  
+Update participant balances  
+↓  
+Generate import report
+
+## 17. Name Normalization
+
+Names are normalized before comparison.
+
+The normalization process:
+
+- Removes leading and trailing spaces.
+- Converts names to lowercase.
+- Removes punctuation.
+- Converts multiple spaces into a single space.
+
+For example:
+
+" Rahul Sharma "  
+"rahul sharma"  
+"RAHUL-SHARMA"
+
+are converted into comparable normalized forms.
+
+This allows formatting differences to be handled without changing the participant's displayed name.
+
+## 18. Fuzzy Name Matching
+
+Exact normalized matching is performed first.
+
+If no exact match is found, a conservative fuzzy matching approach is used with `SequenceMatcher`.
+
+For example:
+
+Rahul Sharma  
+Rahul Sharmma
+
+can be recognized as likely referring to the same participant.
+
+A similarity threshold is used so that unrelated names are not aggressively merged.
+
+This is intentionally conservative because incorrectly merging two different people would produce incorrect financial balances.
+
+## 19. Amount Normalization
+
+Contribution amounts can appear in different formats.
+
+Examples supported include:
+
+1000  
+1,000  
+₹1000  
+₹1,000  
+Rs. 1000  
+INR 1000  
+1000/-  
+1000.50
+
+The application removes currency symbols, labels, commas, spaces, and other formatting characters before converting the value into paise.
+
+Negative, empty, or non-numeric amounts are rejected.
+
+## 20. Duplicate Detection
+
+Duplicate contribution rows are detected using the normalized participant name and parsed contribution amount.
+
+For example:
+
+Rahul Sharma, 500  
+rahul sharma, ₹500
+
+represent the same contribution row and are treated as duplicates.
+
+A duplicate is not added to the participant's total a second time.
+
+However, different valid contributions from the same participant are not treated as duplicates.
+
+For example:
+
+Rahul Sharma, 500  
+Rahul Sharma, 1000
+
+are treated as two separate contributions and Rahul's total becomes ₹1500.
+
+## 21. Invalid Row Handling
+
+Invalid rows are not silently ignored.
+
+A row is rejected if:
+
+- The participant name is missing.
+- The amount is missing.
+- The amount cannot be parsed.
+- The amount is zero or negative.
+
+Each rejected row is recorded in the import report along with its row number and rejection reason.
+
+This makes the data-cleaning process transparent to the organiser.
+
+## 22. Import Report
+
+After importing the CSV, the application reports:
+
+- Total rows processed
+- Successfully imported rows
+- Duplicate rows removed
+- Rows merged with existing participants
+- Rejected rows
+
+The report also provides details about merged names, duplicate rows, and rejected rows.
+
+This satisfies the requirement to report what happened to the messy input instead of silently modifying the data.
+
+## 23. Import and Existing Balances
+
+Imported contributions are added to the same participant payment totals used by the normal application.
+
+Therefore, imported data and manually entered payments use the same balance calculation and settlement logic.
+
+This avoids having two separate balance systems.
+
+For example:
+
+Imported contribution = ₹500  
+Manual payment = ₹300
+
+Total paid = ₹800
+
+The participant's balance is then calculated using the same fair-share calculation as every other participant.
+
+## 24. Important Data Integrity Decision
+
+The system prioritizes avoiding incorrect merges over maximizing the number of automatic merges.
+
+If the application cannot confidently determine that two names refer to the same person, it keeps them separate rather than guessing.
+
+This is important because an incorrect merge can change financial balances and produce an incorrect settlement.
+
+## 25. Testing the Messy Import
+
+The import functionality was tested with combinations of:
+
+- Exact duplicate rows
+- Names with different capitalization
+- Names with extra spaces
+- Names with punctuation differences
+- Minor spelling variations
+- Currency symbols
+- Comma-separated amounts
+- Invalid amounts
+- Negative amounts
+- Missing names
+- Multiple legitimate contributions from one person
+
+The resulting cleaned data was then used by the existing balance and settlement calculations.

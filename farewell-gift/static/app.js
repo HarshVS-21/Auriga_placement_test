@@ -16,6 +16,10 @@ async function api(url, options = {}) {
 }
 
 
+// ---------------------------
+// Pool
+// ---------------------------
+
 async function createPool() {
     const organizer = document.getElementById("organizer").value.trim();
     const budget = document.getElementById("budget").value;
@@ -26,7 +30,7 @@ async function createPool() {
     }
 
     try {
-        await api("/api/pool", {
+        const data = await api("/api/pool", {
             method: "POST",
             body: JSON.stringify({
                 organizer,
@@ -34,12 +38,16 @@ async function createPool() {
             })
         });
 
-        loadSummary();
+        renderSummary(data);
     } catch (error) {
         alert(error.message);
     }
 }
 
+
+// ---------------------------
+// Participants
+// ---------------------------
 
 async function addParticipant() {
     const input = document.getElementById("participantName");
@@ -51,18 +59,24 @@ async function addParticipant() {
     }
 
     try {
-        await api("/api/participants", {
+        const data = await api("/api/participants", {
             method: "POST",
-            body: JSON.stringify({ name })
+            body: JSON.stringify({
+                name
+            })
         });
 
         input.value = "";
-        loadSummary();
+        renderSummary(data);
     } catch (error) {
         alert(error.message);
     }
 }
 
+
+// ---------------------------
+// Payments
+// ---------------------------
 
 async function addPayment(id) {
     const input = document.getElementById(`payment-${id}`);
@@ -74,132 +88,444 @@ async function addPayment(id) {
     }
 
     try {
-        await api(`/api/participants/${id}/payment`, {
-            method: "POST",
-            body: JSON.stringify({ amount })
-        });
+        const data = await api(
+            `/api/participants/${id}/payment`,
+            {
+                method: "POST",
+                body: JSON.stringify({
+                    amount
+                })
+            }
+        );
 
         input.value = "";
-        loadSummary();
+        renderSummary(data);
     } catch (error) {
         alert(error.message);
     }
 }
 
 
-async function loadSummary() {
+// ---------------------------
+// CSV Import
+// ---------------------------
+
+async function importCsv() {
+    const fileInput = document.getElementById("csvFile");
+    const reportBox = document.getElementById("importReport");
+
+    if (!fileInput.files.length) {
+        alert("Please select a CSV file.");
+        return;
+    }
+
+    const formData = new FormData();
+
+    formData.append(
+        "file",
+        fileInput.files[0]
+    );
+
     try {
-        const data = await api("/api/pool");
+        const response = await fetch("/api/import", {
+            method: "POST",
+            body: formData
+        });
 
-        document.getElementById("summarySection")
-            .classList.remove("hidden");
+        const data = await response.json();
 
-        document.getElementById("budgetValue").textContent =
-            `₹${data.budget.toFixed(2)}`;
+        if (!response.ok) {
+            throw new Error(
+                data.error || "Import failed."
+            );
+        }
 
-        document.getElementById("shareValue").textContent =
-            `₹${data.share.toFixed(2)}`;
+        const report = data.report;
 
-        document.getElementById("collectedValue").textContent =
-            `₹${data.total_paid.toFixed(2)}`;
+        reportBox.classList.remove("hidden");
 
-        document.getElementById("remainingValue").textContent =
-            `₹${data.remaining.toFixed(2)}`;
+        let html = `
+            <div class="report-title">
+                Import completed successfully
+            </div>
 
-        renderParticipants(data.participants);
-        renderSettlements(data.settlements, data.surplus);
+            <div class="report-grid">
+
+                <div>
+                    <span>Total rows</span>
+                    <strong>${report.rows}</strong>
+                </div>
+
+                <div>
+                    <span>Imported</span>
+                    <strong>${report.imported}</strong>
+                </div>
+
+                <div>
+                    <span>Duplicates removed</span>
+                    <strong>${report.duplicates}</strong>
+                </div>
+
+                <div>
+                    <span>Merged</span>
+                    <strong>${report.merged}</strong>
+                </div>
+
+                <div>
+                    <span>Rejected</span>
+                    <strong>${report.rejected}</strong>
+                </div>
+
+            </div>
+        `;
+
+
+        // Merged rows
+        if (report.merged_rows.length > 0) {
+            html += `
+                <h3>Merged names</h3>
+
+                <div class="report-list">
+                    ${report.merged_rows.map(item => `
+                        <div>
+                            <strong>
+                                ${escapeHtml(item.source_name)}
+                            </strong>
+
+                            →
+                            
+                            ${escapeHtml(item.canonical_name)}
+
+                            <span>
+                                ₹${Number(item.amount).toFixed(2)}
+                            </span>
+                        </div>
+                    `).join("")}
+                </div>
+            `;
+        }
+
+
+        // Duplicate rows
+        if (report.duplicate_rows.length > 0) {
+            html += `
+                <h3>Duplicate rows removed</h3>
+
+                <div class="report-list">
+                    ${report.duplicate_rows.map(item => `
+                        <div>
+                            Row ${item.row}:
+                            ${escapeHtml(item.name)}
+
+                            <span>
+                                ₹${Number(item.amount).toFixed(2)}
+                            </span>
+                        </div>
+                    `).join("")}
+                </div>
+            `;
+        }
+
+
+        // Rejected rows
+        if (report.rejected_rows.length > 0) {
+            html += `
+                <h3>Rejected rows</h3>
+
+                <div class="report-list">
+                    ${report.rejected_rows.map(item => `
+                        <div>
+                            Row ${item.row}:
+
+                            ${
+                                item.name
+                                    ? escapeHtml(item.name)
+                                    : "(empty name)"
+                            }
+
+                            <span>
+                                ${escapeHtml(item.reason)}
+                            </span>
+                        </div>
+                    `).join("")}
+                </div>
+            `;
+        }
+
+
+        reportBox.innerHTML = html;
+
+        // Update dashboard after import
+        renderSummary(data.summary);
+
+        // Clear selected file
+        fileInput.value = "";
 
     } catch (error) {
-        // No pool yet.
+        alert(error.message);
     }
 }
 
 
+// ---------------------------
+// Load Summary
+// ---------------------------
+
+async function loadSummary() {
+    try {
+        const data = await api("/api/pool");
+
+        renderSummary(data);
+
+    } catch (error) {
+        // No pool exists yet.
+        // Nothing to render.
+    }
+}
+
+
+// ---------------------------
+// Render Summary
+// ---------------------------
+
+function renderSummary(data) {
+    const summarySection =
+        document.getElementById("summarySection");
+
+    summarySection.classList.remove("hidden");
+
+
+    document.getElementById("budgetValue").textContent =
+        `₹${Number(data.budget).toFixed(2)}`;
+
+
+    document.getElementById("shareValue").textContent =
+        `₹${Number(data.share).toFixed(2)}`;
+
+
+    document.getElementById("collectedValue").textContent =
+        `₹${Number(data.total_paid).toFixed(2)}`;
+
+
+    document.getElementById("remainingValue").textContent =
+        `₹${Number(data.remaining).toFixed(2)}`;
+
+
+    renderParticipants(data.participants);
+
+    renderSettlements(
+        data.settlements,
+        data.surplus
+    );
+}
+
+
+// ---------------------------
+// Render Participants
+// ---------------------------
+
 function renderParticipants(participants) {
-    const table = document.getElementById("participantsTable");
+    const table =
+        document.getElementById("participantsTable");
 
     table.innerHTML = "";
 
-    participants.forEach(p => {
+
+    participants.forEach(participant => {
 
         let balanceText;
 
-        if (p.status === "owes") {
+
+        if (participant.status === "owes") {
+
             balanceText =
-                `Owes ₹${p.balance.toFixed(2)}`;
-        } else if (p.status === "credit") {
+                `<span style="color:#dc2626;font-weight:600;">
+                    Owes ₹${Math.abs(
+                        Number(participant.balance)
+                    ).toFixed(2)}
+                 </span>`;
+
+        } else if (participant.status === "credit") {
+
             balanceText =
-                `Credit ₹${Math.abs(p.balance).toFixed(2)}`;
+                `<span style="color:#16a34a;font-weight:600;">
+                    Credit ₹${Math.abs(
+                        Number(participant.balance)
+                    ).toFixed(2)}
+                 </span>`;
+
         } else {
-            balanceText = "Settled";
+
+            balanceText =
+                `<span style="color:#16a34a;font-weight:600;">
+                    Settled
+                 </span>`;
         }
+
 
         table.innerHTML += `
             <tr>
-                <td>${escapeHtml(p.name)}</td>
-                <td>₹${p.share.toFixed(2)}</td>
-                <td>₹${p.paid.toFixed(2)}</td>
-                <td>${balanceText}</td>
+
                 <td>
+                    <strong>
+                        ${escapeHtml(participant.name)}
+                    </strong>
+                </td>
+
+                <td>
+                    ₹${Number(
+                        participant.share
+                    ).toFixed(2)}
+                </td>
+
+                <td>
+                    ₹${Number(
+                        participant.paid
+                    ).toFixed(2)}
+                </td>
+
+                <td>
+                    ${balanceText}
+                </td>
+
+                <td>
+
                     <input
-                        id="payment-${p.id}"
+                        id="payment-${participant.id}"
                         class="payment-input"
                         type="number"
                         min="0.01"
                         step="0.01"
                         placeholder="₹ amount"
                     >
-                    <button onclick="addPayment(${p.id})">
+
+                    <button
+                        onclick="addPayment(${participant.id})"
+                    >
                         Add
                     </button>
+
                 </td>
+
             </tr>
         `;
     });
+
+
+    if (participants.length === 0) {
+        table.innerHTML = `
+            <tr>
+                <td colspan="5"
+                    style="text-align:center;color:#6b7280;">
+                    No participants added yet.
+                </td>
+            </tr>
+        `;
+    }
 }
 
 
-function renderSettlements(settlements, surplus) {
-    const container = document.getElementById("settlements");
+// ---------------------------
+// Render Settlements
+// ---------------------------
 
-    if (settlements.length === 0) {
-        if (surplus > 0) {
-            container.innerHTML =
-                `<p>All participant balances are settled. Pool surplus: ₹${surplus.toFixed(2)}</p>`;
+function renderSettlements(
+    settlements,
+    surplus
+) {
+    const container =
+        document.getElementById("settlements");
+
+
+    if (!settlements ||
+        settlements.length === 0) {
+
+        if (Number(surplus) > 0) {
+
+            container.innerHTML = `
+                <div class="settlement">
+                    All participant balances are settled.
+
+                    Pool surplus:
+                    <strong>
+                        ₹${Number(surplus).toFixed(2)}
+                    </strong>
+                </div>
+            `;
+
         } else {
-            container.innerHTML =
-                "<p>No settlements needed yet.</p>";
+
+            container.innerHTML = `
+                <p>
+                    No settlements needed yet.
+                </p>
+            `;
         }
+
         return;
     }
 
-    container.innerHTML = settlements.map(s => `
-        <div class="settlement">
-            <strong>${escapeHtml(s.from)}</strong>
-            pays
-            <strong>₹${s.amount.toFixed(2)}</strong>
-            to
-            <strong>${escapeHtml(s.to)}</strong>
-        </div>
-    `).join("");
+
+    container.innerHTML =
+        settlements.map(settlement => `
+            <div class="settlement">
+
+                <strong>
+                    ${escapeHtml(settlement.from)}
+                </strong>
+
+                <span>pays</span>
+
+                <strong>
+                    ₹${Number(
+                        settlement.amount
+                    ).toFixed(2)}
+                </strong>
+
+                <span>to</span>
+
+                <strong>
+                    ${escapeHtml(settlement.to)}
+                </strong>
+
+            </div>
+        `).join("");
 }
 
+
+// ---------------------------
+// Reset
+// ---------------------------
 
 async function resetPool() {
-    if (!confirm("Reset the entire pool?")) {
+    const confirmed = confirm(
+        "Reset the entire pool? This will remove all participants and payments."
+    );
+
+    if (!confirmed) {
         return;
     }
 
-    await api("/api/reset", {
-        method: "POST"
-    });
 
-    location.reload();
+    try {
+        await api("/api/reset", {
+            method: "POST"
+        });
+
+        location.reload();
+
+    } catch (error) {
+        alert(error.message);
+    }
 }
 
 
+// ---------------------------
+// HTML Escaping
+// ---------------------------
+
 function escapeHtml(value) {
-    return value
+    return String(value)
         .replaceAll("&", "&amp;")
         .replaceAll("<", "&lt;")
         .replaceAll(">", "&gt;")
@@ -207,5 +533,9 @@ function escapeHtml(value) {
         .replaceAll("'", "&#039;");
 }
 
+
+// ---------------------------
+// Initial Load
+// ---------------------------
 
 loadSummary();
