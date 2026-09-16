@@ -5,15 +5,16 @@ import csv
 import io
 import re
 from difflib import SequenceMatcher
+from collections import Counter
 
 app = Flask(__name__)
 
 DB_PATH = Path("gift.db")
 
 
-# =========================================================
+# ============================================================
 # DATABASE
-# =========================================================
+# ============================================================
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -44,265 +45,276 @@ def init_db():
     conn.close()
 
 
-# =========================================================
-# SUMMARY
-# =========================================================
+# ============================================================
+# NAME NORMALIZATION
+# ============================================================
 
-def calculate_summary():
-    conn = get_db()
+def normalize_name(name):
+    """
+    Normalize a name for comparison.
 
-    pool = conn.execute(
-        "SELECT * FROM pool WHERE id = 1"
-    ).fetchone()
+    Examples:
+        " Rahul Sharma " -> "rahul sharma"
+        "RAHUL-SHARMA"   -> "rahul sharma"
+    """
+
+    name = str(name or "").strip().lower()
+
+    # Replace punctuation with spaces.
+    name = re.sub(r"[^a-z0-9\s]", " ", name)
+
+    # Collapse repeated whitespace.
+    name = re.sub(r"\s+", " ", name).strip()
+
+    return name
+
+
+def compact_name(name):
+    """
+    Remove spaces from normalized name.
+
+    Examples:
+        "Harsh Vardhan" -> "harshvardhan"
+        "harshvardhan"  -> "harshvardhan"
+    """
+
+    return normalize_name(name).replace(" ", "")
+
+
+# ============================================================
+# STRING SIMILARITY
+# ============================================================
+
+def sequence_similarity(s1, s2):
+    """
+    Similarity based on character order.
+    """
+
+    if not s1 or not s2:
+        return 0.0
+
+    if s1 == s2:
+        return 1.0
+
+    return SequenceMatcher(
+        None,
+        s1,
+        s2
+    ).ratio()
+
+
+def character_similarity(s1, s2):
+    """
+    Similarity based on character composition.
+
+    Helps with small rearrangements such as:
+        Rahul -> Ruhal
+        Rahul -> Rahlu
+    """
+
+    if not s1 or not s2:
+        return 0.0
+
+    if len(s1) != len(s2):
+        return 0.0
+
+    counter1 = Counter(s1)
+    counter2 = Counter(s2)
+
+    if counter1 == counter2:
+        return 1.0
+
+    common = sum(
+        (counter1 & counter2).values()
+    )
+
+    return common / max(
+        len(s1),
+        len(s2)
+    )
+
+
+def token_similarity(token1, token2):
+    """
+    Compare individual name tokens.
+    """
+
+    token1 = token1.lower()
+    token2 = token2.lower()
+
+    if token1 == token2:
+        return 1.0
+
+    ordered_score = sequence_similarity(
+        token1,
+        token2
+    )
+
+    character_score = character_similarity(
+        token1,
+        token2
+    )
+
+    return max(
+        ordered_score,
+        character_score
+    )
+
+
+def name_similarity(name1, name2):
+    """
+    Compare names while handling:
+
+    - capitalization
+    - punctuation
+    - extra spaces
+    - joined names
+    - minor spelling mistakes
+    - character rearrangements
+    """
+
+    n1 = normalize_name(name1)
+    n2 = normalize_name(name2)
+
+    if not n1 or not n2:
+        return 0.0
+
+    # Exact normalized match.
+    if n1 == n2:
+        return 1.0
+
+    # Exact match after removing spaces.
+    # Example:
+    # Harsh Vardhan
+    # harshvardhan
+    c1 = compact_name(name1)
+    c2 = compact_name(name2)
+
+    if c1 == c2:
+        return 1.0
+
+    # Compare compact forms.
+    compact_score = sequence_similarity(
+        c1,
+        c2
+    )
+
+    # Token-based comparison.
+    tokens1 = n1.split()
+    tokens2 = n2.split()
+
+    token_score = 0.0
+
+    if len(tokens1) == len(tokens2):
+
+        scores = [
+            token_similarity(t1, t2)
+            for t1, t2 in zip(tokens1, tokens2)
+        ]
+
+        if scores and min(scores) >= 0.70:
+            token_score = (
+                sum(scores) / len(scores)
+            )
+
+    return max(
+        compact_score,
+        token_score
+    )
+
+
+def find_matching_participant(conn, cleaned_name):
+    """
+    Find an existing participant.
+
+    Returns:
+        (participant, similarity_score)
+    """
 
     participants = conn.execute(
         """
-        SELECT id, name, paid
+        SELECT id, name
         FROM participants
         ORDER BY id
         """
     ).fetchall()
 
-    conn.close()
-
-    if not pool:
-        return None
-
-    budget = pool["budget"]
-    count = len(participants)
-
-    # All values are stored in paise.
-    share_paise = budget / count if count else 0
-
-    result = []
-
-    for participant in participants:
-        paid = participant["paid"]
-
-        # Positive = amount still owed
-        # Negative = amount paid extra
-        balance = share_paise - paid
-
-        if balance > 0.005:
-            status = "owes"
-
-        elif balance < -0.005:
-            status = "credit"
-
-        else:
-            status = "settled"
-
-        result.append({
-            "id": participant["id"],
-            "name": participant["name"],
-            "paid": round(paid / 100, 2),
-            "share": round(share_paise / 100, 2),
-            "balance": round(balance / 100, 2),
-            "status": status
-        })
-
-    total_paid = sum(
-        participant["paid"]
-        for participant in participants
+    normalized_name = normalize_name(
+        cleaned_name
     )
 
-    remaining = max(budget - total_paid, 0)
-    surplus = max(total_paid - budget, 0)
-
-    settlements = generate_settlements(
-        participants,
-        budget
-    )
-
-    return {
-        "organizer": pool["organizer"],
-        "budget": round(budget / 100, 2),
-        "participant_count": count,
-        "share": round(share_paise / 100, 2)
-            if count else 0,
-        "total_paid": round(total_paid / 100, 2),
-        "remaining": round(remaining / 100, 2),
-        "surplus": round(surplus / 100, 2),
-        "participants": result,
-        "settlements": settlements
-    }
-
-
-# =========================================================
-# SETTLEMENT ALGORITHM
-# =========================================================
-
-def generate_settlements(participants, budget):
-    count = len(participants)
-
-    if count == 0:
-        return []
-
-    share = budget / count
-
-    creditors = []
-    debtors = []
-
-    for participant in participants:
-
-        net = participant["paid"] - share
-
-        # Participant paid extra
-        if net > 0.005:
-            creditors.append({
-                "name": participant["name"],
-                "amount": net
-            })
-
-        # Participant still owes
-        elif net < -0.005:
-            debtors.append({
-                "name": participant["name"],
-                "amount": -net
-            })
-
-    settlements = []
-
-    debtor_index = 0
-    creditor_index = 0
-
-    while (
-        debtor_index < len(debtors)
-        and creditor_index < len(creditors)
-    ):
-        amount = min(
-            debtors[debtor_index]["amount"],
-            creditors[creditor_index]["amount"]
-        )
-
-        settlements.append({
-            "from": debtors[debtor_index]["name"],
-            "to": creditors[creditor_index]["name"],
-            "amount": round(amount / 100, 2)
-        })
-
-        debtors[debtor_index]["amount"] -= amount
-        creditors[creditor_index]["amount"] -= amount
-
-        if debtors[debtor_index]["amount"] <= 0.005:
-            debtor_index += 1
-
-        if creditors[creditor_index]["amount"] <= 0.005:
-            creditor_index += 1
-
-    return settlements
-
-
-# =========================================================
-# NAME CLEANING
-# =========================================================
-
-def normalize_name(name):
-    name = str(name or "").strip().lower()
-
-    name = re.sub(
-        r"[^a-z0-9\s]",
-        " ",
-        name
-    )
-
-    name = re.sub(
-        r"\s+",
-        " ",
-        name
-    ).strip()
-
-    return name
-
-def name_similarity(name1, name2):
-    normalized1 = normalize_name(name1)
-    normalized2 = normalize_name(name2)
-
-    if not normalized1 or not normalized2:
-        return 0
-
-    # Exact normalized match.
-    if normalized1 == normalized2:
-        return 1.0
-
-    # Full string similarity.
-    full_ratio = SequenceMatcher(
-        None,
-        normalized1,
-        normalized2
-    ).ratio()
-
-    # Token-based comparison.
-    tokens1 = sorted(normalized1.split())
-    tokens2 = sorted(normalized2.split())
-
-    token_ratio = SequenceMatcher(
-        None,
-        " ".join(tokens1),
-        " ".join(tokens2)
-    ).ratio()
-
-    return max(
-        full_ratio,
-        token_ratio
-    )
-
-
-def find_matching_participant(conn, cleaned_name):
-    participants = conn.execute(
-        """
-        SELECT id, name
-        FROM participants
-        """
-    ).fetchall()
-
-    normalized_name = normalize_name(cleaned_name)
-
+    # --------------------------------------------------------
     # 1. Exact normalized match
-    for participant in participants:
-        if normalize_name(participant["name"]) == normalized_name:
-            return participant
+    # --------------------------------------------------------
 
-    # 2. Conservative fuzzy matching
+    for participant in participants:
+
+        if normalize_name(
+            participant["name"]
+        ) == normalized_name:
+
+            return participant, 1.0
+
+    # --------------------------------------------------------
+    # 2. Exact compact match
+    # --------------------------------------------------------
+
+    compact_input = compact_name(
+        cleaned_name
+    )
+
+    for participant in participants:
+
+        if compact_name(
+            participant["name"]
+        ) == compact_input:
+
+            return participant, 1.0
+
+    # --------------------------------------------------------
+    # 3. Fuzzy match
+    # --------------------------------------------------------
+
     best_match = None
-    best_score = 0
+    best_score = 0.0
 
     for participant in participants:
+
         score = name_similarity(
             cleaned_name,
             participant["name"]
         )
 
         if score > best_score:
+
             best_score = score
             best_match = participant
 
-    # Only merge when similarity is sufficiently high.
-    if best_match and best_score >= 0.88:
-        return best_match
+    # Conservative threshold.
+    if best_match and best_score >= 0.78:
+        return best_match, best_score
 
-    return None
+    return None, 0.0
 
-# =========================================================
-# AMOUNT CLEANING
-# =========================================================
+
+# ============================================================
+# MONEY PARSING
+# ============================================================
 
 def parse_amount(value):
     """
-    Converts messy currency strings into integer paise.
+    Convert messy currency values into integer paise.
 
-    Supported examples:
+    Supported:
 
-    1000
-    1,000
-    ₹1000
-    ₹1,000
-    Rs. 1000
-    INR 1000
-    1000/-
-    1000.50
-
-    Invalid and negative values return None.
+        1000
+        1,000
+        ₹1000
+        ₹1,000
+        Rs. 1000
+        INR 1000
+        1000/-
+        1000.50
     """
 
     if value is None:
@@ -313,7 +325,7 @@ def parse_amount(value):
     if not text:
         return None
 
-    # Remove currency symbols / labels.
+    # Remove currency labels.
     text = re.sub(
         r"(₹|rs\.?|inr)",
         "",
@@ -331,7 +343,7 @@ def parse_amount(value):
     # Remove spaces.
     text = text.replace(" ", "")
 
-    # Remove remaining unwanted characters.
+    # Keep numbers, decimal point and minus sign.
     text = re.sub(
         r"[^0-9.\-]",
         "",
@@ -347,34 +359,36 @@ def parse_amount(value):
 
     try:
         amount = float(text)
-
     except ValueError:
         return None
 
     if amount <= 0:
         return None
 
-    return int(round(amount * 100))
+    return int(
+        round(amount * 100)
+    )
 
 
-# =========================================================
+# ============================================================
 # CSV HELPERS
-# =========================================================
+# ============================================================
 
-def find_column(
-    fieldnames,
-    possible_names
-):
+def find_column(fieldnames, possible_names):
     """
-    Finds the actual CSV column name even if
-    capitalization or spacing differs.
+    Find a CSV column despite differences in
+    capitalization and spacing.
     """
 
-    normalized_columns = {
-        normalize_name(field): field
-        for field in fieldnames
-        if field is not None
-    }
+    normalized_columns = {}
+
+    for field in fieldnames:
+
+        if field is not None:
+
+            normalized_columns[
+                normalize_name(field)
+            ] = field
 
     for possible_name in possible_names:
 
@@ -383,6 +397,7 @@ def find_column(
         )
 
         if normalized_possible in normalized_columns:
+
             return normalized_columns[
                 normalized_possible
             ]
@@ -390,20 +405,34 @@ def find_column(
     return None
 
 
-# =========================================================
+def empty_import_report():
+    return {
+        "rows": 0,
+        "imported": 0,
+        "duplicates": 0,
+        "merged": 0,
+        "rejected": 0,
+        "rejected_rows": [],
+        "merged_rows": [],
+        "duplicate_rows": []
+    }
+
+
+# ============================================================
 # CSV IMPORT
-# =========================================================
+# ============================================================
 
 def import_contributions(file_bytes):
     """
-    Reads and cleans the uploaded CSV.
+    Import and clean contribution data.
 
-    Reports:
-    - total rows
-    - imported rows
-    - duplicate rows
-    - merged rows
-    - rejected rows
+    Handles:
+        - duplicate rows
+        - spelling variations
+        - joined names
+        - inconsistent amount formats
+        - invalid rows
+        - merging
     """
 
     text = file_bytes.decode(
@@ -416,6 +445,7 @@ def import_contributions(file_bytes):
     )
 
     if not reader.fieldnames:
+
         raise ValueError(
             "CSV must contain a header row."
         )
@@ -443,31 +473,26 @@ def import_contributions(file_bytes):
     )
 
     if not name_column:
+
         raise ValueError(
             "CSV must contain a name column."
         )
 
     if not amount_column:
+
         raise ValueError(
             "CSV must contain an amount column."
         )
 
     conn = get_db()
 
-    report = {
-        "rows": 0,
-        "imported": 0,
-        "duplicates": 0,
-        "merged": 0,
-        "rejected": 0,
-        "rejected_rows": [],
-        "merged_rows": [],
-        "duplicate_rows": []
-    }
+    report = empty_import_report()
 
-    # Used to identify exact duplicate rows
-    # inside the uploaded CSV.
+    # Exact duplicate rows inside the uploaded CSV.
     seen_rows = set()
+
+    # Aliases found during this import.
+    import_aliases = []
 
     for row_number, row in enumerate(
         reader,
@@ -494,9 +519,9 @@ def import_contributions(file_bytes):
             raw_amount
         )
 
-        # -----------------------------------------
-        # Missing / invalid name
-        # -----------------------------------------
+        # ----------------------------------------------------
+        # Missing name
+        # ----------------------------------------------------
 
         if not cleaned_name:
 
@@ -511,9 +536,9 @@ def import_contributions(file_bytes):
 
             continue
 
-        # -----------------------------------------
+        # ----------------------------------------------------
         # Invalid amount
-        # -----------------------------------------
+        # ----------------------------------------------------
 
         if amount_paise is None:
 
@@ -523,18 +548,20 @@ def import_contributions(file_bytes):
                 "row": row_number,
                 "name": cleaned_name,
                 "amount": str(raw_amount),
-                "reason": f"Invalid amount: {raw_amount}"
+                "reason": (
+                    f"Invalid amount: {raw_amount}"
+                )
             })
 
             continue
 
-        # -----------------------------------------
-        # Exact duplicate contribution row
-        # -----------------------------------------
-
         normalized_name = normalize_name(
             cleaned_name
         )
+
+        # ----------------------------------------------------
+        # Exact duplicate contribution
+        # ----------------------------------------------------
 
         duplicate_key = (
             normalized_name,
@@ -557,19 +584,63 @@ def import_contributions(file_bytes):
             duplicate_key
         )
 
-        # -----------------------------------------
-        # Find existing participant
-        # -----------------------------------------
+        # ----------------------------------------------------
+        # Match existing database participant
+        # ----------------------------------------------------
 
-        participant = find_matching_participant(
-            conn,
-            cleaned_name
+        participant, match_score = (
+            find_matching_participant(
+                conn,
+                cleaned_name
+            )
         )
+
+        # ----------------------------------------------------
+        # If not found, match against aliases from
+        # earlier rows in this same CSV.
+        # ----------------------------------------------------
+
+        if participant is None:
+
+            best_alias = None
+            best_alias_score = 0.0
+
+            for alias in import_aliases:
+
+                score = name_similarity(
+                    cleaned_name,
+                    alias["canonical_name"]
+                )
+
+                if score > best_alias_score:
+
+                    best_alias_score = score
+                    best_alias = alias
+
+            if (
+                best_alias is not None
+                and best_alias_score >= 0.78
+            ):
+
+                participant = conn.execute(
+                    """
+                    SELECT id, name
+                    FROM participants
+                    WHERE id = ?
+                    """,
+                    (
+                        best_alias["participant_id"],
+                    )
+                ).fetchone()
+
+                match_score = best_alias_score
+
+        # ----------------------------------------------------
+        # Matched participant
+        # ----------------------------------------------------
 
         if participant:
 
-            # Merge contribution into existing
-            # participant.
             conn.execute(
                 """
                 UPDATE participants
@@ -582,19 +653,43 @@ def import_contributions(file_bytes):
                 )
             )
 
-            report["merged"] += 1
+            # Record merge when imported spelling differs.
+            if (
+                normalize_name(
+                    cleaned_name
+                )
+                !=
+                normalize_name(
+                    participant["name"]
+                )
+            ):
 
-            report["merged_rows"].append({
-                "row": row_number,
-                "source_name": cleaned_name,
+                report["merged"] += 1
+
+                report["merged_rows"].append({
+                    "row": row_number,
+                    "source_name": cleaned_name,
+                    "canonical_name": participant["name"],
+                    "amount": amount_paise / 100,
+                    "similarity": round(
+                        match_score,
+                        3
+                    )
+                })
+
+            # Remember this spelling as an alias.
+            import_aliases.append({
                 "canonical_name": participant["name"],
-                "amount": amount_paise / 100
+                "participant_id": participant["id"]
             })
+
+        # ----------------------------------------------------
+        # New participant
+        # ----------------------------------------------------
 
         else:
 
-            # Create a new participant.
-            conn.execute(
+            cursor = conn.execute(
                 """
                 INSERT INTO participants
                 (name, paid)
@@ -606,7 +701,13 @@ def import_contributions(file_bytes):
                 )
             )
 
-        # Valid, non-duplicate row.
+            participant_id = cursor.lastrowid
+
+            import_aliases.append({
+                "canonical_name": cleaned_name,
+                "participant_id": participant_id
+            })
+
         report["imported"] += 1
 
     conn.commit()
@@ -615,9 +716,231 @@ def import_contributions(file_bytes):
     return report
 
 
-# =========================================================
+# ============================================================
+# SETTLEMENT
+# ============================================================
+
+def generate_settlements(
+    participants,
+    budget
+):
+    """
+    Generate a practical list of who pays whom.
+    """
+
+    participant_count = len(
+        participants
+    )
+
+    if participant_count == 0:
+        return []
+
+    share = (
+        budget / participant_count
+    )
+
+    debtors = []
+    creditors = []
+
+    for participant in participants:
+
+        net = (
+            participant["paid"]
+            - share
+        )
+
+        if net < -0.005:
+
+            debtors.append({
+                "name": participant["name"],
+                "amount": -net
+            })
+
+        elif net > 0.005:
+
+            creditors.append({
+                "name": participant["name"],
+                "amount": net
+            })
+
+    settlements = []
+
+    debtor_index = 0
+    creditor_index = 0
+
+    while (
+        debtor_index < len(debtors)
+        and creditor_index < len(creditors)
+    ):
+
+        amount = min(
+            debtors[debtor_index]["amount"],
+            creditors[creditor_index]["amount"]
+        )
+
+        settlements.append({
+            "from": debtors[debtor_index]["name"],
+            "to": creditors[creditor_index]["name"],
+            "amount": round(
+                amount / 100,
+                2
+            )
+        })
+
+        debtors[debtor_index]["amount"] -= amount
+        creditors[creditor_index]["amount"] -= amount
+
+        if (
+            debtors[debtor_index]["amount"]
+            <= 0.005
+        ):
+
+            debtor_index += 1
+
+        if (
+            creditors[creditor_index]["amount"]
+            <= 0.005
+        ):
+
+            creditor_index += 1
+
+    return settlements
+
+
+# ============================================================
+# POOL SUMMARY
+# ============================================================
+
+def calculate_summary():
+    conn = get_db()
+
+    pool = conn.execute(
+        """
+        SELECT *
+        FROM pool
+        WHERE id = 1
+        """
+    ).fetchone()
+
+    participants = conn.execute(
+        """
+        SELECT id, name, paid
+        FROM participants
+        ORDER BY id
+        """
+    ).fetchall()
+
+    conn.close()
+
+    if not pool:
+        return None
+
+    budget = pool["budget"]
+
+    participant_count = len(
+        participants
+    )
+
+    # Equal fair share.
+    share_paise = (
+        budget / participant_count
+        if participant_count
+        else 0
+    )
+
+    participant_results = []
+
+    for participant in participants:
+
+        paid = participant["paid"]
+
+        # Positive = still owes.
+        # Negative = paid extra.
+        balance = (
+            share_paise - paid
+        )
+
+        if balance > 0.005:
+
+            status = "owes"
+
+        elif balance < -0.005:
+
+            status = "credit"
+
+        else:
+
+            status = "settled"
+
+        participant_results.append({
+            "id": participant["id"],
+            "name": participant["name"],
+            "paid": round(
+                paid / 100,
+                2
+            ),
+            "share": round(
+                share_paise / 100,
+                2
+            ),
+            "balance": round(
+                balance / 100,
+                2
+            ),
+            "status": status
+        })
+
+    total_paid = sum(
+        participant["paid"]
+        for participant in participants
+    )
+
+    remaining = max(
+        budget - total_paid,
+        0
+    )
+
+    surplus = max(
+        total_paid - budget,
+        0
+    )
+
+    settlements = generate_settlements(
+        participants,
+        budget
+    )
+
+    return {
+        "organizer": pool["organizer"],
+        "budget": round(
+            budget / 100,
+            2
+        ),
+        "participant_count": participant_count,
+        "share": round(
+            share_paise / 100,
+            2
+        ) if participant_count else 0,
+        "total_paid": round(
+            total_paid / 100,
+            2
+        ),
+        "remaining": round(
+            remaining / 100,
+            2
+        ),
+        "surplus": round(
+            surplus / 100,
+            2
+        ),
+        "participants": participant_results,
+        "settlements": settlements
+    }
+
+
+# ============================================================
 # ROUTES
-# =========================================================
+# ============================================================
 
 @app.route("/")
 def index():
@@ -625,10 +948,6 @@ def index():
         "index.html"
     )
 
-
-# ---------------------------------------------------------
-# GET POOL
-# ---------------------------------------------------------
 
 @app.route(
     "/api/pool",
@@ -639,16 +958,15 @@ def get_pool():
     summary = calculate_summary()
 
     if not summary:
+
         return jsonify({
             "error": "No pool exists"
         }), 404
 
-    return jsonify(summary)
+    return jsonify(
+        summary
+    )
 
-
-# ---------------------------------------------------------
-# CREATE / UPDATE POOL
-# ---------------------------------------------------------
 
 @app.route(
     "/api/pool",
@@ -665,16 +983,19 @@ def create_pool():
     budget = data.get("budget")
 
     if not organizer:
+
         return jsonify({
             "error": "Organizer is required"
         }), 400
 
     if budget is None:
+
         return jsonify({
             "error": "Budget is required"
         }), 400
 
     try:
+
         budget_paise = int(
             round(
                 float(budget) * 100
@@ -685,18 +1006,20 @@ def create_pool():
         ValueError,
         TypeError
     ):
+
         return jsonify({
             "error": "Invalid budget"
         }), 400
 
     if budget_paise <= 0:
+
         return jsonify({
             "error": "Budget must be greater than 0"
         }), 400
 
     conn = get_db()
 
-    # Creating a new pool starts a fresh participant list.
+    # A new/updated pool starts with no participants.
     conn.execute(
         "DELETE FROM participants"
     )
@@ -726,10 +1049,6 @@ def create_pool():
     ), 201
 
 
-# ---------------------------------------------------------
-# ADD PARTICIPANT
-# ---------------------------------------------------------
-
 @app.route(
     "/api/participants",
     methods=["POST"]
@@ -743,22 +1062,29 @@ def add_participant():
     ).strip()
 
     if not name:
+
         return jsonify({
             "error": "Name is required"
         }), 400
 
     conn = get_db()
 
-    # Make sure a pool exists.
     pool = conn.execute(
-        "SELECT id FROM pool WHERE id = 1"
+        """
+        SELECT id
+        FROM pool
+        WHERE id = 1
+        """
     ).fetchone()
 
     if not pool:
+
         conn.close()
 
         return jsonify({
-            "error": "Create a pool before adding participants"
+            "error": (
+                "Create a pool before adding participants"
+            )
         }), 400
 
     try:
@@ -789,17 +1115,11 @@ def add_participant():
     ), 201
 
 
-# ---------------------------------------------------------
-# ADD PAYMENT
-# ---------------------------------------------------------
-
 @app.route(
     "/api/participants/<int:participant_id>/payment",
     methods=["POST"]
 )
-def add_payment(
-    participant_id
-):
+def add_payment(participant_id):
 
     data = request.get_json() or {}
 
@@ -825,7 +1145,9 @@ def add_payment(
     if amount_paise <= 0:
 
         return jsonify({
-            "error": "Payment must be greater than 0"
+            "error": (
+                "Payment must be greater than 0"
+            )
         }), 400
 
     conn = get_db()
@@ -867,23 +1189,19 @@ def add_payment(
     )
 
 
-# ---------------------------------------------------------
-# IMPORT CSV
-# ---------------------------------------------------------
-
 @app.route(
     "/api/import",
     methods=["POST"]
 )
 def import_csv():
 
-    # A pool must exist before importing.
-    pool_summary = calculate_summary()
-
-    if not pool_summary:
+    # Pool must exist first.
+    if not calculate_summary():
 
         return jsonify({
-            "error": "Create a pool before importing contributions."
+            "error": (
+                "Create a pool before importing contributions."
+            )
         }), 400
 
     if "file" not in request.files:
@@ -900,7 +1218,9 @@ def import_csv():
             "error": "No file selected."
         }), 400
 
-    if not file.filename.lower().endswith(".csv"):
+    if not file.filename.lower().endswith(
+        ".csv"
+    ):
 
         return jsonify({
             "error": "Please upload a CSV file."
@@ -926,10 +1246,6 @@ def import_csv():
         }), 400
 
 
-# ---------------------------------------------------------
-# RESET
-# ---------------------------------------------------------
-
 @app.route(
     "/api/reset",
     methods=["POST"]
@@ -954,9 +1270,9 @@ def reset():
     })
 
 
-# =========================================================
-# APPLICATION START
-# =========================================================
+# ============================================================
+# START APPLICATION
+# ============================================================
 
 if __name__ == "__main__":
 
